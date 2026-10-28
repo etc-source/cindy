@@ -122,7 +122,8 @@ describe('useDeviceLinkSettings deletion', () => {
   // 服务端以「在线」拒绝删除(409 → ALREADY_EXISTS)：列出 target 后点删除，返回 remove() 的结果。
   async function removeAfterOnlineRejection(
     onlineBefore: boolean,
-    refreshed: 'offline' | 'online' | 'gone' | 'fails' | 'never returns',
+    refreshed: 'offline' | 'online' | 'gone' | 'fails' | 'never returns' | 'gone after the timeout',
+    afterRemove?: (devices: () => unknown[] | null) => Promise<void>,
   ) {
     const off = vi.fn();
     const subscribe = vi.fn(() => off);
@@ -134,6 +135,7 @@ describe('useDeviceLinkSettings deletion', () => {
     if (refreshed === 'fails') listDevices.mockRejectedValue(new Error('[INTERNAL] list failed'));
     else if (refreshed === 'never returns') listDevices.mockReturnValue(new Promise<never>(() => {}));
     else if (refreshed === 'gone') listDevices.mockResolvedValue({ devices: [] });
+    else if (refreshed === 'gone after the timeout') listDevices.mockReturnValue(late.promise);
     else listDevices.mockResolvedValue(listed(refreshed === 'online'));
     const api = {
       getState: vi.fn(() => new Promise<never>(() => {})),
@@ -163,9 +165,11 @@ describe('useDeviceLinkSettings deletion', () => {
       vi.useRealTimers();
     }
     expect(api.listDevices).toHaveBeenCalledTimes(2);
+    await afterRemove?.(() => result.current.devices);
     unmount();
     return deleted;
   }
+  const late = deferred<{ devices: never[] }>();
 
   // 被拒后先刷新列表再选提示，提示要跟此刻界面上的列表一致：仍显示离线的设备不能再提示「尚不
   // 支持移除在线设备」；点删除时与刷新后状态不同，以刷新后的为准。刷新一直不返回时界面仍是原
@@ -187,6 +191,18 @@ describe('useDeviceLinkSettings deletion', () => {
 
   // 被拒之后设备被别处删掉：刷新后的列表里已经没有它，界面那一行已消失。确认框要按已删除关闭，
   // 不能报「在线设备」错误、留下一个指向不存在设备的确认框。
+  // 补拉超时后才返回、且已不含目标：提示与返回值按超时时的列表给出，迟到结果不能再把设备行删掉，
+  // 否则确认框（remove 返回 false 时保持打开）会指向一个已经消失的设备。
+  it('ignores a refresh that answers after the timeout so the row stays with the open dialog', async () => {
+    const deleted = await removeAfterOnlineRejection(false, 'gone after the timeout', async (devices) => {
+      await act(async () => { late.resolve({ devices: [] }); });
+      expect(devices()).toHaveLength(1);
+    });
+    expect(deleted).toBe(false);
+    expect(effects.error).toHaveBeenCalledWith('settings.devices.toast.deleteRejectedWhileOffline');
+    expect(effects.removeDevice).not.toHaveBeenCalled();
+  });
+
   it('closes as deleted when the refreshed list no longer has the device', async () => {
     expect(await removeAfterOnlineRejection(false, 'gone')).toBe(true);
     expect(effects.success).toHaveBeenCalledWith('settings.devices.toast.deleted');

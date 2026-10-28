@@ -264,13 +264,20 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
         // 不能再提示「尚不支持移除在线设备」让用户误以为设备真在线；显示在线或刷新失败(界面
         // 换成错误块、看不到设备行)时沿用原提示。
         let timer: ReturnType<typeof setTimeout> | undefined;
+        let timedOut = false;
         await Promise.race([
           refresh(),
           new Promise<void>((resolve) => {
-            timer = setTimeout(resolve, REJECTED_DELETE_REFRESH_TIMEOUT_MS);
+            timer = setTimeout(() => {
+              timedOut = true;
+              resolve();
+            }, REJECTED_DELETE_REFRESH_TIMEOUT_MS);
           }),
         ]);
         clearTimeout(timer);
+        // 超时后才返回的补拉作废：提示与返回值按此刻的列表给出，迟到结果不能再改动设备行，
+        // 否则保持打开的确认框会指向一个已经消失的设备。
+        if (timedOut) refreshGeneration.current += 1;
         const { devices: listed, ok } = latestList.current;
         const target = ok ? listed?.find((device) => device.deviceId === deviceId) : undefined;
         if (ok && listed && !target) {
