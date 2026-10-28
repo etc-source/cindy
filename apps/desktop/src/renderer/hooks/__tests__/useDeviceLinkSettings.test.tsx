@@ -203,10 +203,50 @@ describe('useDeviceLinkSettings deletion', () => {
     expect(effects.removeDevice).not.toHaveBeenCalled();
   });
 
-  it('closes as deleted when the refreshed list no longer has the device', async () => {
-    expect(await removeAfterOnlineRejection(false, 'gone')).toBe(true);
-    expect(effects.success).toHaveBeenCalledWith('settings.devices.toast.deleted');
-    expect(effects.removeDevice).toHaveBeenCalledWith('target');
-    expect(effects.error).not.toHaveBeenCalled();
+  // 服务端拒绝了删除：补拉的列表里暂时没有这台设备（在线设备可能被单次列表偶发漏掉）也不能报成
+  // 已删除、清缓存，只报删除失败。
+  it('reports a failure, not a deletion, when the refreshed list happens to miss the device', async () => {
+    expect(await removeAfterOnlineRejection(false, 'gone')).toBe(false);
+    expect(effects.error).toHaveBeenCalledWith('settings.devices.toast.deleteFailed');
+    expect(effects.success).not.toHaveBeenCalled();
+    expect(effects.removeDevice).not.toHaveBeenCalled();
+  });
+
+  // 被拒后的补拉挂起时又发起了更新的刷新：超时只作废被拒后的那次，更新的刷新晚到也要更新列表。
+  it('keeps a newer refresh that answers after the rejected refresh timed out', async () => {
+    const subscribe = vi.fn(() => vi.fn());
+    const device = (online: boolean, name = 'MacBook') => ({ deviceId: 'target', name, platform: 'darwin', appVersion: null,
+      lastSeenAt: null, online, busy: false, remoteControlEnabled: false, controlEnabled: true, isSelf: false });
+    const newer = deferred<{ devices: ReturnType<typeof device>[] }>();
+    const listDevices = vi.fn()
+      .mockResolvedValueOnce({ devices: [device(false)] })
+      .mockReturnValueOnce(new Promise<never>(() => {}))
+      .mockReturnValueOnce(newer.promise);
+    const api = {
+      getState: vi.fn(() => new Promise<never>(() => {})),
+      listDevices,
+      deleteDevice: vi.fn().mockRejectedValue(new Error('[ALREADY_EXISTS] device is online')),
+      onOwnershipChanged: subscribe, onPresenceChanged: subscribe, onStatusChanged: subscribe,
+      onConnectionIssue: subscribe, onControlledState: subscribe, onControlTargetChanged: subscribe,
+    };
+    (window as unknown as { electronAPI: { deviceLink: typeof api } }).electronAPI = { deviceLink: api };
+    const { result, unmount } = renderHook(() => useDeviceLinkSettings());
+    await waitFor(() => expect(result.current.devices).toHaveLength(1));
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        const removing = result.current.remove('target');
+        await vi.advanceTimersByTimeAsync(1_000);
+        void result.current.refresh();
+        await vi.advanceTimersByTimeAsync(60_000);
+        await removing;
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await act(async () => { newer.resolve({ devices: [device(false, 'Renamed')] }); });
+    expect(result.current.devices?.[0]?.name).toBe('Renamed');
+    unmount();
   });
 });

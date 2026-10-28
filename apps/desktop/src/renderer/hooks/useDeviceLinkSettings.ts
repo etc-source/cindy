@@ -258,15 +258,17 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
           toast.error(t('settings.devices.toast.deleteFailed'));
           return false;
         }
-        // 服务端以「设备在线」拒绝删除。先刷新一次列表与服务端对齐(最多等一会儿)，再按此刻
-        // 界面上的列表收口：设备已不在列表里(拒绝之后被别处删掉)，界面那一行已经消失，按已删除
-        // 处理并关闭确认框；仍显示离线(含刷新超时、界面仍是原列表)说明两边的在线判断不一致，
-        // 不能再提示「尚不支持移除在线设备」让用户误以为设备真在线；显示在线或刷新失败(界面
-        // 换成错误块、看不到设备行)时沿用原提示。
+        // 服务端以「设备在线」拒绝删除，删除没有发生。先刷新一次列表与服务端对齐(最多等一会儿)，
+        // 再按此刻界面上的列表选提示：仍显示离线(含刷新超时、界面仍是原列表)说明两边的在线判断
+        // 不一致，不能再提示「尚不支持移除在线设备」让用户误以为设备真在线；显示在线或刷新失败
+        // (界面换成错误块、看不到设备行)时沿用原提示；列表里暂时没有这台设备时只报删除失败——
+        // 在线设备可能被单次列表偶发漏掉，没有服务端的删除确认就不能推断已删除。
         let timer: ReturnType<typeof setTimeout> | undefined;
         let timedOut = false;
+        const refreshing = refresh();
+        const rejectedRefreshGeneration = refreshGeneration.current;
         await Promise.race([
-          refresh(),
+          refreshing,
           new Promise<void>((resolve) => {
             timer = setTimeout(() => {
               timedOut = true;
@@ -275,22 +277,20 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
           }),
         ]);
         clearTimeout(timer);
-        // 超时后才返回的补拉作废：提示与返回值按此刻的列表给出，迟到结果不能再改动设备行，
-        // 否则保持打开的确认框会指向一个已经消失的设备。
-        if (timedOut) refreshGeneration.current += 1;
+        // 超时后才返回的这次补拉作废：提示与返回值按此刻的列表给出，迟到结果不能再改动设备行，
+        // 否则保持打开的确认框会指向一个已经消失的设备。期间若已有更新的刷新发起，它不受影响。
+        if (timedOut && refreshGeneration.current === rejectedRefreshGeneration) {
+          refreshGeneration.current += 1;
+        }
         const { devices: listed, ok } = latestList.current;
         const target = ok ? listed?.find((device) => device.deviceId === deviceId) : undefined;
-        if (ok && listed && !target) {
-          remoteProjectsStore.removeDevice(deviceId);
-          removeDeviceLinkDevice(deviceId);
-          toast.success(t('settings.devices.toast.deleted'));
-          return true;
-        }
         toast.error(
           t(
-            target && !target.online
-              ? 'settings.devices.toast.deleteRejectedWhileOffline'
-              : 'settings.devices.toast.deleteOnline',
+            ok && listed && !target
+              ? 'settings.devices.toast.deleteFailed'
+              : target && !target.online
+                ? 'settings.devices.toast.deleteRejectedWhileOffline'
+                : 'settings.devices.toast.deleteOnline',
           ),
         );
         return false;
