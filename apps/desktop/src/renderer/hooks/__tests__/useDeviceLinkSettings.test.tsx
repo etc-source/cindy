@@ -212,7 +212,8 @@ describe('useDeviceLinkSettings deletion', () => {
     expect(effects.removeDevice).not.toHaveBeenCalled();
   });
 
-  // 被拒后的补拉挂起时又发起了更新的刷新：超时只作废被拒后的那次，更新的刷新晚到也要更新列表。
+  // 被拒后的补拉挂起时又发起了更新的刷新：超时只作废被拒后的那次，更新的刷新晚到也要更新列表；
+  // 它还没回来时列表的在线状态未定，提示不能断言「列表显示离线」。
   it('keeps a newer refresh that answers after the rejected refresh timed out', async () => {
     const subscribe = vi.fn(() => vi.fn());
     const device = (online: boolean, name = 'MacBook') => ({ deviceId: 'target', name, platform: 'darwin', appVersion: null,
@@ -245,8 +246,9 @@ describe('useDeviceLinkSettings deletion', () => {
     } finally {
       vi.useRealTimers();
     }
-    await act(async () => { newer.resolve({ devices: [device(false, 'Renamed')] }); });
-    expect(result.current.devices?.[0]?.name).toBe('Renamed');
+    expect(effects.error).toHaveBeenCalledWith('settings.devices.toast.deleteFailed');
+    await act(async () => { newer.resolve({ devices: [device(true, 'Renamed')] }); });
+    expect(result.current.devices?.[0]).toMatchObject({ name: 'Renamed', online: true });
     unmount();
   });
 });

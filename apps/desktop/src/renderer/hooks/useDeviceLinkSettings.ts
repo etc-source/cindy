@@ -83,6 +83,8 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
   const [refreshing, setRefreshing] = useState(false);
   const mounted = useRef(true);
   const refreshGeneration = useRef(0);
+  // 最近一次已返回（成功或失败）的刷新代次；与 refreshGeneration 不同说明还有刷新在途。
+  const settledRefreshGeneration = useRef(0);
   const disabledControlDeviceIdsRef = useRef<string[]>([]);
   // getState() 与 ownership push 可能乱序返回;事件版本推进后,旧快照不得覆盖新事实。
   const ownershipEventVersion = useRef(0);
@@ -114,12 +116,14 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
       try {
         const { devices: list } = await window.electronAPI.deviceLink.listDevices();
         if (!mounted.current || generation !== refreshGeneration.current) return;
+        settledRefreshGeneration.current = generation;
         latestList.current = { devices: list, ok: true };
         setDevices(list);
         setListError(null);
       } catch (err) {
         log.warn('listDevices failed', err);
         if (!mounted.current || generation !== refreshGeneration.current) return;
+        settledRefreshGeneration.current = generation;
         latestList.current = { ...latestList.current, ok: false };
         const ipcErr = extractIpcError(err);
         setListError(
@@ -278,7 +282,12 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
         ]);
         clearTimeout(timer);
         // 超时后才返回的这次补拉作废：提示与返回值按此刻的列表给出，迟到结果不能再改动设备行，
-        // 否则保持打开的确认框会指向一个已经消失的设备。期间若已有更新的刷新发起，它不受影响。
+        // 否则保持打开的确认框会指向一个已经消失的设备。期间若已有更新的刷新发起，它不受影响；
+        // 它还没返回时列表的在线状态未定，提示不引用在线状态。
+        const newerPending =
+          timedOut &&
+          refreshGeneration.current !== rejectedRefreshGeneration &&
+          refreshGeneration.current !== settledRefreshGeneration.current;
         if (timedOut && refreshGeneration.current === rejectedRefreshGeneration) {
           refreshGeneration.current += 1;
         }
@@ -286,7 +295,7 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
         const target = ok ? listed?.find((device) => device.deviceId === deviceId) : undefined;
         toast.error(
           t(
-            ok && listed && !target
+            newerPending || (ok && listed && !target)
               ? 'settings.devices.toast.deleteFailed'
               : target && !target.online
                 ? 'settings.devices.toast.deleteRejectedWhileOffline'
